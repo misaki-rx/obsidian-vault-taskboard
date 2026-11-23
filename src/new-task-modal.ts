@@ -1,5 +1,6 @@
 import { FuzzySuggestModal, Modal, Setting, type App, type TFile } from "obsidian";
-import { categories, type Category } from "./model";
+import { CategoryModal, CREATE_CATEGORY, fillCategories } from "./category-ui";
+import { findCategory, type Category } from "./model";
 import { DEFAULT_INBOX, type TaskDraft } from "./new-task";
 
 class DestinationPicker extends FuzzySuggestModal<TFile> {
@@ -29,6 +30,7 @@ export class NewTaskModal extends Modal {
   constructor(
     app: App,
     private readonly initialCategory: Category | null,
+    private readonly categories: () => readonly Category[],
     private readonly destinations: () => TFile[],
     private readonly submitTask: (draft: TaskDraft) => Promise<void>,
   ) {
@@ -44,12 +46,32 @@ export class NewTaskModal extends Modal {
     });
 
     let category = this.initialCategory;
-    new Setting(form).setName("Category").addDropdown(dropdown => {
-      dropdown.addOption("", "Uncategorized");
-      for (const name of categories) dropdown.addOption(name, name);
-      dropdown.setValue(category ?? "");
-      dropdown.selectEl.setAttribute("aria-label", "Category");
-      dropdown.onChange(value => { category = categories.find(item => item === value) ?? null; });
+    let draftCategory: Category | undefined;
+    const categorySelect = new Setting(form).setName("Category").controlEl.createEl("select", {
+      attr: { "aria-label": "Category" },
+    });
+    const availableCategories = () => {
+      const names = this.categories();
+      return draftCategory && !findCategory(names, draftCategory) ? [...names, draftCategory] : names;
+    };
+    const showCategories = () => {
+      const names = availableCategories();
+      category = category ? findCategory(names, category) ?? null : null;
+      fillCategories(categorySelect, names, "assign");
+      categorySelect.value = category ?? "";
+    };
+    showCategories();
+    categorySelect.addEventListener("change", () => {
+      if (categorySelect.value !== CREATE_CATEGORY) {
+        category = categorySelect.value || null;
+        return;
+      }
+      showCategories();
+      new CategoryModal(this.app, availableCategories, (name, isNew) => {
+        if (isNew) draftCategory = name;
+        category = name;
+        showCategories();
+      }).open();
     });
 
     let destination: TFile | null = null;
@@ -94,7 +116,12 @@ export class NewTaskModal extends Modal {
       if (submit.disabled) return;
       error.textContent = "";
       try {
-        const draft = { title: title.value, category, destination };
+        const draft = {
+          title: title.value,
+          category,
+          destination,
+          createCategory: category === draftCategory,
+        };
         for (const control of controls) control.disabled = true;
         await this.submitTask(draft);
         this.close();

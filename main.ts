@@ -3,7 +3,7 @@ import type { TAbstractFile } from "obsidian";
 import { Board } from "./src/board";
 import { appendTask, DEFAULT_INBOX, taskTitle, type CreatedTask, type TaskDraft } from "./src/new-task";
 import {
-  categories, editTaskLines, hasBoardBlock, stateKey, taskStatus,
+  builtInCategories, categoryName, editTaskLines, findCategory, hasBoardBlock, stateKey, taskStatus,
   type Category, type LineEdit, type Status, type Task, type TaskState,
 } from "./src/model";
 import { TaskIndex } from "./src/task-index";
@@ -14,6 +14,7 @@ const BOARD_BLOCK = "```progress-check\n```\n";
 interface BoardData {
   boardPath: string;
   boardWidth?: number;
+  customCategories: Category[];
   tasks: Record<string, TaskState>;
 }
 
@@ -21,6 +22,20 @@ type Change = { status: Status } | { category: Category | null };
 
 function restoreData(raw: unknown): BoardData {
   const data = raw as Partial<BoardData> | null;
+  const customCategories: Category[] = [];
+  if (Array.isArray(data?.customCategories)) {
+    for (const entry of data.customCategories) {
+      if (typeof entry !== "string") continue;
+      try {
+        const name = categoryName(entry);
+        if (findCategory(builtInCategories, name) || findCategory(customCategories, name)) continue;
+        customCategories.push(name);
+      } catch {
+        // Ignore malformed category names from stored data.
+      }
+    }
+  }
+  const available = [...builtInCategories, ...customCategories];
   const tasks: Record<string, TaskState> = {};
   for (const [key, value] of Object.entries(data?.tasks ?? {})) {
     let pair: unknown;
@@ -35,16 +50,16 @@ function restoreData(raw: unknown): BoardData {
     ) continue;
     const state: TaskState = {};
     if (value?.progress === true) state.progress = true;
-    if (value?.category && categories.includes(value.category)) state.category = value.category;
+    if (typeof value?.category === "string") state.category = findCategory(available, value.category);
     if (state.progress || state.category) tasks[stateKey(pair[0], pair[1])] = state;
   }
   const boardWidth = typeof data?.boardWidth === "number" &&
     Number.isFinite(data.boardWidth) && data.boardWidth > 0 ? data.boardWidth : undefined;
-  return { boardPath: data?.boardPath || DEFAULT_BOARD, boardWidth, tasks };
+  return { boardPath: data?.boardPath || DEFAULT_BOARD, boardWidth, customCategories, tasks };
 }
 
 export default class ProgressChecker extends Plugin {
-  private data: BoardData = { boardPath: DEFAULT_BOARD, tasks: {} };
+  private data: BoardData = { boardPath: DEFAULT_BOARD, customCategories: [], tasks: {} };
   private index!: TaskIndex;
   private readonly listeners = new Set<() => void>();
   private queue: Promise<unknown> = Promise.resolve();
@@ -63,12 +78,13 @@ export default class ProgressChecker extends Plugin {
           failedReads: this.index.failedReads,
         }),
         state: task => this.stateFor(task),
+        categories: () => this.categoryNames(),
         subscribe: listener => {
           this.listeners.add(listener);
           return () => this.listeners.delete(listener);
         },
         move: (tasks, status) => this.change(tasks, { status }),
-        categorize: (task, category) => this.change([task], { category }),
+        categorize: (task, category, create) => this.setTaskCategory(task, category, create),
         refresh: () => this.index.refresh(),
         open: task => this.openTask(task),
         destinations: () => this.app.vault.getMarkdownFiles()
@@ -173,12 +189,43 @@ export default class ProgressChecker extends Plugin {
     return task.blockId ? this.data.tasks[stateKey(task.path, task.blockId)] : undefined;
   }
 
+  private categoryNames(): readonly Category[] {
+    return [...builtInCategories, ...this.data.customCategories];
+  }
+
+  private resolveCategory(requested: Category | null, allowCreate = false): {
+    category: Category | null;
+    customCategories?: Category[];
+  } {
+    if (requested === null) return { category: null };
+    const existing = findCategory(this.categoryNames(), requested);
+    if (existing) return { category: existing };
+    if (!allowCreate) throw new Error("This category is no longer available.");
+    const category = categoryName(requested);
+    return { category, customCategories: [...this.data.customCategories, category] };
+  }
+
+  private setTaskCategory(task: Task, requested: Category | null, create: boolean): Promise<Category | null> {
+    return this.enqueue(async () => {
+      const { category, customCategories } = this.resolveCategory(requested, create);
+      try {
+        await this.changeNote(task.path, [task], { category }, customCategories);
+      } catch (error) {
+        const file = this.app.vault.getFileByPath(task.path);
+        if (file) void this.index.read(file);
+        throw error;
+      }
+      return category;
+    });
+  }
+
   private isTaskDestination(path: string, boardPath: string): boolean {
     return path !== boardPath && path !== this.data.boardPath;
   }
 
   private async createTask(draft: TaskDraft, boardPath: string): Promise<CreatedTask> {
     const title = taskTitle(draft.title);
+    const { category, customCategories } = this.resolveCategory(draft.category, draft.createCategory);
     const path = draft.destination?.path ?? DEFAULT_INBOX;
     if (!this.isTaskDestination(path, boardPath)) {
       throw new Error("Choose a note other than the board.");
@@ -197,9 +244,10 @@ export default class ProgressChecker extends Plugin {
     if (file) this.validateSource(file, path, current, current);
     const blockId = this.makeBlockId(current);
     const content = appendTask(current, title, blockId);
-    const next = draft.category ? {
+    const next = category ? {
       ...this.data,
-      tasks: { ...this.data.tasks, [stateKey(path, blockId)]: { category: draft.category } },
+      customCategories: customCategories ?? this.data.customCategories,
+      tasks: { ...this.data.tasks, [stateKey(path, blockId)]: { category } },
     } : undefined;
 
     await this.persistTaskChange(next, async () => {
@@ -212,7 +260,7 @@ export default class ProgressChecker extends Plugin {
         await this.app.vault.create(path, content);
       }
     });
-    return { path, blockId, category: draft.category };
+    return { path, blockId, category };
   }
 
   private change(tasks: Task[], change: Change): Promise<Task[]> {
@@ -246,7 +294,12 @@ export default class ProgressChecker extends Plugin {
     });
   }
 
-  private async changeNote(path: string, tasks: Task[], change: Change): Promise<void> {
+  private async changeNote(
+    path: string,
+    tasks: Task[],
+    change: Change,
+    customCategories?: Category[],
+  ): Promise<void> {
     const file = this.app.vault.getFileByPath(path);
     const note = this.index.notes.get(path);
     if (!file || !note || tasks.some(task => !note.tasks.includes(task))) {
@@ -259,9 +312,13 @@ export default class ProgressChecker extends Plugin {
     }
 
     const previous = this.data;
-    const next: BoardData = { ...previous, tasks: { ...previous.tasks } };
+    const next: BoardData = {
+      ...previous,
+      customCategories: customCategories ?? previous.customCategories,
+      tasks: { ...previous.tasks },
+    };
     const edits: LineEdit[] = [];
-    let stateChanged = false;
+    let stateChanged = customCategories !== undefined;
     for (const task of tasks) {
       const old = this.stateFor(task);
       const state = { ...old };

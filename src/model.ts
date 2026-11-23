@@ -9,8 +9,27 @@ export const statusLabels: Record<Status, string> = {
   done: "Done",
 };
 
-export const categories = ["Read", "Implementation", "Write"] as const;
-export type Category = typeof categories[number];
+export const builtInCategories = ["Read", "Implementation", "Write"] as const;
+export type Category = string;
+
+function categoryKey(name: string): string {
+  return name.trim().normalize("NFC").toLowerCase();
+}
+
+export function findCategory(names: readonly Category[], name: string): Category | undefined {
+  const key = categoryKey(name);
+  return names.find(category => categoryKey(category) === key);
+}
+
+export function categoryName(input: string): Category {
+  const name = input.trim().normalize("NFC");
+  if (!name) throw new Error("Enter a category name.");
+  if (/[\u0000-\u001f\u007f]/.test(name)) throw new Error("Use a single line for the category name.");
+  if (["uncategorized", "+ category", "all categories"].includes(categoryKey(name))) {
+    throw new Error("That label is reserved by the category menu.");
+  }
+  return name;
+}
 
 export interface TaskState {
   progress?: true;

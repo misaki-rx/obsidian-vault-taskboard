@@ -1,7 +1,7 @@
 {
   "id": "progress-checker",
   "name": "Progress Checker",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "minAppVersion": "1.5.7",
   "description": "Collect vault checkboxes in a three-column task board and update them from the board.",
   "author": "Runxi Wang",

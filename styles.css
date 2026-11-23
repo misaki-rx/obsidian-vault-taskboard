@@ -34,12 +34,15 @@
   margin-inline-start: auto;
 }
 
-.pc-new-task-error {
+.pc-new-task-error,
+.pc-form-error {
   color: var(--text-error);
 }
 
 .pc-new-task-form [hidden],
-.pc-new-task-error:empty {
+.pc-new-task-error:empty,
+.pc-form-error:empty,
+.pc-category-feedback:empty {
   display: none !important;
 }
 

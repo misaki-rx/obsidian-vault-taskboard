@@ -1,7 +1,8 @@
 import { MarkdownRenderChild, MarkdownRenderer, Menu, Notice, type App, type TFile } from "obsidian";
 import { BoardWidth } from "./board-width";
+import { ALL_CATEGORIES, CategoryModal, CREATE_CATEGORY, fillCategories } from "./category-ui";
 import {
-  categories, stateKey, statusLabels, statuses, taskStatus,
+  stateKey, statusLabels, statuses, taskStatus,
   type Category, type Status, type Task, type TaskState,
 } from "./model";
 import type { CreatedTask, TaskDraft } from "./new-task";
@@ -11,9 +12,10 @@ interface Controller {
   app: App;
   snapshot(): { tasks: Task[]; loading: boolean; failedReads: number };
   state(task: Task): TaskState | undefined;
+  categories(): readonly Category[];
   subscribe(listener: () => void): () => void;
   move(tasks: Task[], status: Status): Promise<Task[]>;
-  categorize(task: Task, category: Category | null): Promise<Task[]>;
+  categorize(task: Task, category: Category | null, create: boolean): Promise<Category | null>;
   refresh(): Promise<void>;
   open(task: Task): Promise<void>;
   destinations(): TFile[];
@@ -61,16 +63,6 @@ const labels: Record<Status, string> = {
   done: "Reopen task",
 };
 
-function fillCategories(select: HTMLSelectElement, filter: boolean): void {
-  if (filter) select.createEl("option", { value: "all", text: "All categories" });
-  select.createEl("option", { value: "", text: "Uncategorized" });
-  for (const category of categories) select.createEl("option", { value: category, text: category });
-}
-
-function categoryValue(value: string): Category | null {
-  return categories.find(category => category === value) ?? null;
-}
-
 export class Board extends MarkdownRenderChild {
   private widthFrame!: HTMLElement;
   private root!: HTMLElement;
@@ -84,6 +76,8 @@ export class Board extends MarkdownRenderChild {
   private readonly pending = new Set<string>();
   private readonly limits = new Map<Status, number>();
   private readonly recentTasks = new Set<string>();
+  private categoryNames: readonly Category[] = [];
+  private revealKey?: string;
   private active: Status = "todo";
   private frame?: number;
   private drag?: Drag;
@@ -110,7 +104,7 @@ export class Board extends MarkdownRenderChild {
     });
     addTask.addEventListener("click", () => this.openTaskForm());
     this.filter = toolbar.createEl("select", { attr: { "aria-label": "Filter by category" } });
-    fillCategories(this.filter, true);
+    this.syncCategories();
     this.filter.addEventListener("change", () => this.onFilterChange());
 
     this.start = toolbar.createEl("button", {
@@ -206,13 +200,24 @@ export class Board extends MarkdownRenderChild {
   private onFilterChange(): void {
     this.limits.clear();
     this.selected.clear();
+    this.revealKey = undefined;
     this.schedule();
+  }
+
+  private syncCategories(): void {
+    const names = this.controller.categories();
+    if (names.length === this.categoryNames.length &&
+      names.every((name, index) => name === this.categoryNames[index])) return;
+    this.categoryNames = names;
+    fillCategories(this.filter, names, "filter");
+    for (const card of this.cards.values()) fillCategories(card.category, names, "assign");
   }
 
   private openTaskForm(): void {
     new NewTaskModal(
       this.controller.app,
-      categoryValue(this.filter.value),
+      this.categoryNames.includes(this.filter.value) ? this.filter.value : null,
+      () => this.controller.categories(),
       () => this.controller.destinations(),
       async draft => this.onTaskCreated(await this.controller.create(draft)),
     ).open();
@@ -231,45 +236,57 @@ export class Board extends MarkdownRenderChild {
     }
 
     const category = created.category ?? "";
-    if (this.filter.value === "all" || this.filter.value === category) {
+    if (this.matchesFilter(category)) {
       this.activate("todo");
       this.schedule();
       return;
     }
 
+    this.offerReveal("Task created.", category, "todo");
+  }
+
+  private matchesFilter(category: string): boolean {
+    return this.filter.value === ALL_CATEGORIES || this.filter.value === category;
+  }
+
+  private offerReveal(messageText: string, category: string, status: Status, taskKey?: string): void {
     const message = this.containerEl.ownerDocument.createDocumentFragment();
-    message.append("Task created. ");
+    message.append(messageText + " ");
     const view = message.createEl("button", { text: "View task", attr: { type: "button" } });
     const notice = new Notice(message, 8000);
     view.addEventListener("click", () => {
       notice.hide();
       if (this.closed) return;
+      this.syncCategories();
       this.filter.value = category;
       this.onFilterChange();
-      this.activate("todo");
-      this.columns.get("todo")?.element.scrollIntoView({ block: "nearest" });
+      this.revealKey = taskKey;
+      this.activate(status);
+      this.columns.get(status)?.element.scrollIntoView({ block: "nearest" });
     });
   }
 
   private render(): void {
     if (this.root.getClientRects().length === 0) return;
+    this.syncCategories();
     const { tasks, loading, failedReads } = this.controller.snapshot();
     this.message.textContent = loading
       ? "Indexing tasks…"
       : failedReads ? `Could not read ${failedReads} note(s). Use Refresh to retry.` : "";
     this.message.hidden = !this.message.textContent;
 
-    const filter = this.filter.value;
     const groups: Record<Status, Task[]> = { todo: [], progress: [], done: [] };
     const validSelection = new Set<string>();
     const recent = new Map<string, Task>();
+    let reveal: { task: Task; status: Status } | undefined;
     for (const task of tasks) {
       const state = this.controller.state(task);
       const status = taskStatus(task, state);
-      if (filter !== "all" && (state?.category ?? "") !== filter) continue;
+      if (!this.matchesFilter(state?.category ?? "")) continue;
       const createdKey = status === "todo" && this.recentTasks.size && task.blockId
         ? stateKey(task.path, task.blockId) : undefined;
-      if (createdKey && this.recentTasks.has(createdKey)) recent.set(createdKey, task);
+      if (this.revealKey === task.key) reveal = { task, status };
+      else if (createdKey && this.recentTasks.has(createdKey)) recent.set(createdKey, task);
       else groups[status].push(task);
       if (status === "todo" && this.selected.get(task.key) === task) validSelection.add(task.key);
     }
@@ -277,6 +294,7 @@ export class Board extends MarkdownRenderChild {
       const task = recent.get(key);
       if (task) groups.todo.unshift(task);
     }
+    if (reveal) groups[reveal.status].unshift(reveal.task);
     for (const key of this.selected.keys()) {
       if (!validSelection.has(key)) this.selected.delete(key);
     }
@@ -333,7 +351,7 @@ export class Board extends MarkdownRenderChild {
 
     const footer = content.createDiv({ cls: "pc-card-footer" });
     const category = footer.createEl("select", { cls: "pc-category" });
-    fillCategories(category, false);
+    fillCategories(category, this.categoryNames, "assign");
     const source = footer.createEl("button", { cls: "pc-source", attr: { type: "button" } });
 
     const card: Card = { element, title, source, checkbox, category, handle, details, summary, body, task, status };
@@ -349,9 +367,20 @@ export class Board extends MarkdownRenderChild {
       }
     });
     category.addEventListener("change", () => {
-      const target = categoryValue(category.value);
+      const target = category.value;
       category.value = this.controller.state(card.task)?.category ?? "";
-      void this.run([card.task], () => this.controller.categorize(card.task, target));
+      const task = card.task;
+      if (target === CREATE_CATEGORY) {
+        new CategoryModal(
+          this.controller.app,
+          () => this.controller.categories(),
+          (name, isNew) => this.assignCategory(task, name, isNew),
+        ).open();
+      } else {
+        void this.assignCategory(task, target || null, false).catch(error => {
+          new Notice(error instanceof Error ? error.message : "Could not update the task category.");
+        });
+      }
     });
     source.addEventListener("click", () => void this.controller.open(card.task));
     details.addEventListener("toggle", () => this.showDetails(card));
@@ -430,6 +459,17 @@ export class Board extends MarkdownRenderChild {
       if (this.activeMenu === menu) this.activeMenu = undefined;
     });
     menu.showAtPosition({ x: rect.left, y: rect.bottom });
+  }
+
+  private async assignCategory(task: Task, category: Category | null, create: boolean): Promise<void> {
+    await this.run([task], async () => {
+      const assigned = await this.controller.categorize(task, category, create);
+      if (!this.closed && !this.matchesFilter(assigned ?? "")) {
+        const status = taskStatus(task, this.controller.state(task));
+        this.offerReveal("Category updated.", assigned ?? "", status, task.key);
+      }
+      return [task];
+    });
   }
 
   private async run(tasks: Task[], operation: () => Promise<Task[]>): Promise<Task[]> {
