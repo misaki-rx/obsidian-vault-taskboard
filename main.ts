@@ -1,6 +1,7 @@
 import { MarkdownView, Notice, Plugin, TFile, TFolder } from "obsidian";
 import type { TAbstractFile } from "obsidian";
 import { Board } from "./src/board";
+import { appendTask, DEFAULT_INBOX, taskTitle, type CreatedTask, type TaskDraft } from "./src/new-task";
 import {
   categories, editTaskLines, hasBoardBlock, stateKey, taskStatus,
   type Category, type LineEdit, type Status, type Task, type TaskState,
@@ -70,6 +71,9 @@ export default class ProgressChecker extends Plugin {
         categorize: (task, category) => this.change([task], { category }),
         refresh: () => this.index.refresh(),
         open: task => this.openTask(task),
+        destinations: () => this.app.vault.getMarkdownFiles()
+          .filter(file => this.isTaskDestination(file.path, context.sourcePath)),
+        create: draft => this.enqueue(() => this.createTask(draft, context.sourcePath)),
         width: () => this.data.boardWidth,
         saveWidth: width => this.enqueue(async () => {
           if (width === this.data.boardWidth) return;
@@ -169,6 +173,48 @@ export default class ProgressChecker extends Plugin {
     return task.blockId ? this.data.tasks[stateKey(task.path, task.blockId)] : undefined;
   }
 
+  private isTaskDestination(path: string, boardPath: string): boolean {
+    return path !== boardPath && path !== this.data.boardPath;
+  }
+
+  private async createTask(draft: TaskDraft, boardPath: string): Promise<CreatedTask> {
+    const title = taskTitle(draft.title);
+    const path = draft.destination?.path ?? DEFAULT_INBOX;
+    if (!this.isTaskDestination(path, boardPath)) {
+      throw new Error("Choose a note other than the board.");
+    }
+
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing && !(existing instanceof TFile)) {
+      throw new Error("The inbox path is already a folder. Choose another note.");
+    }
+    const file = existing instanceof TFile ? existing : null;
+    if (draft.destination && file !== draft.destination) {
+      throw new Error("The selected note is no longer available. Choose another note.");
+    }
+
+    const current = file ? await this.app.vault.read(file) : "";
+    if (file) this.validateSource(file, path, current, current);
+    const blockId = this.makeBlockId(current);
+    const content = appendTask(current, title, blockId);
+    const next = draft.category ? {
+      ...this.data,
+      tasks: { ...this.data.tasks, [stateKey(path, blockId)]: { category: draft.category } },
+    } : undefined;
+
+    await this.persistTaskChange(next, async () => {
+      if (file) {
+        await this.app.vault.process(file, source => {
+          this.validateSource(file, path, source, current);
+          return content;
+        });
+      } else {
+        await this.app.vault.create(path, content);
+      }
+    });
+    return { path, blockId, category: draft.category };
+  }
+
   private change(tasks: Task[], change: Change): Promise<Task[]> {
     return this.enqueue(async () => {
       const byPath = new Map<string, Task[]>();
@@ -249,23 +295,29 @@ export default class ProgressChecker extends Plugin {
     }
 
     if (!edits.length && !stateChanged) return;
-    // Stage metadata first so a source write failure can leave both views at their prior status.
     if (stateChanged) {
       const latest = await this.app.vault.read(file);
       this.validateSource(file, path, latest, note.source);
-      await this.saveData(next);
     }
+    await this.persistTaskChange(stateChanged ? next : undefined, async () => {
+      if (!edits.length) return;
+      const source = await this.app.vault.process(file, current => {
+        this.validateSource(file, path, current, note.source);
+        return editTaskLines(current, edits);
+      });
+      const indexed = this.index.notes.get(path);
+      if (file.path === path && indexed === note) this.index.accept(file, source, note.metadata);
+    });
+  }
+
+  private async persistTaskChange(next: BoardData | undefined, write: () => Promise<void>): Promise<void> {
+    const previous = this.data;
+    // Stage metadata first so a source write failure can restore the prior state.
+    if (next) await this.saveData(next);
     try {
-      if (edits.length) {
-        const source = await this.app.vault.process(file, current => {
-          this.validateSource(file, path, current, note.source);
-          return editTaskLines(current, edits);
-        });
-        const indexed = this.index.notes.get(path);
-        if (file.path === path && indexed === note) this.index.accept(file, source, note.metadata);
-      }
+      await write();
     } catch (error) {
-      if (stateChanged) {
+      if (next) {
         try {
           await this.saveData(previous);
         } catch (rollbackError) {
@@ -275,7 +327,7 @@ export default class ProgressChecker extends Plugin {
       throw error;
     }
 
-    this.data = next;
+    if (next) this.data = next;
     this.notify();
   }
 

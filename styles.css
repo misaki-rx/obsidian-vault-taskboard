@@ -34,6 +34,15 @@
   margin-inline-start: auto;
 }
 
+.pc-new-task-error {
+  color: var(--text-error);
+}
+
+.pc-new-task-form [hidden],
+.pc-new-task-error:empty {
+  display: none !important;
+}
+
 .pc-resize-handle {
   position: absolute;
   z-index: 3;

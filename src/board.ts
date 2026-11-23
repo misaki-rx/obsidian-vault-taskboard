@@ -1,9 +1,11 @@
-import { MarkdownRenderChild, MarkdownRenderer, Menu, type App } from "obsidian";
+import { MarkdownRenderChild, MarkdownRenderer, Menu, Notice, type App, type TFile } from "obsidian";
 import { BoardWidth } from "./board-width";
 import {
-  categories, statusLabels, statuses, taskStatus,
+  categories, stateKey, statusLabels, statuses, taskStatus,
   type Category, type Status, type Task, type TaskState,
 } from "./model";
+import type { CreatedTask, TaskDraft } from "./new-task";
+import { NewTaskModal } from "./new-task-modal";
 
 interface Controller {
   app: App;
@@ -14,6 +16,8 @@ interface Controller {
   categorize(task: Task, category: Category | null): Promise<Task[]>;
   refresh(): Promise<void>;
   open(task: Task): Promise<void>;
+  destinations(): TFile[];
+  create(draft: TaskDraft): Promise<CreatedTask>;
   width(): number | undefined;
   saveWidth(width: number | undefined): Promise<void>;
 }
@@ -79,6 +83,7 @@ export class Board extends MarkdownRenderChild {
   private readonly selected = new Map<string, Task>();
   private readonly pending = new Set<string>();
   private readonly limits = new Map<Status, number>();
+  private readonly recentTasks = new Set<string>();
   private active: Status = "todo";
   private frame?: number;
   private drag?: Drag;
@@ -98,13 +103,15 @@ export class Board extends MarkdownRenderChild {
     this.widthFrame = this.containerEl.createDiv({ cls: "pc-width-frame" });
     this.root = this.widthFrame.createDiv({ cls: "pc-board" });
     const toolbar = this.root.createDiv({ cls: "pc-toolbar" });
+    const addTask = toolbar.createEl("button", {
+      cls: "mod-cta pc-add-task",
+      text: "+ New task",
+      attr: { type: "button" },
+    });
+    addTask.addEventListener("click", () => this.openTaskForm());
     this.filter = toolbar.createEl("select", { attr: { "aria-label": "Filter by category" } });
     fillCategories(this.filter, true);
-    this.filter.addEventListener("change", () => {
-      this.limits.clear();
-      this.selected.clear();
-      this.schedule();
-    });
+    this.filter.addEventListener("change", () => this.onFilterChange());
 
     this.start = toolbar.createEl("button", {
       cls: "mod-cta pc-batch",
@@ -196,6 +203,54 @@ export class Board extends MarkdownRenderChild {
     });
   }
 
+  private onFilterChange(): void {
+    this.limits.clear();
+    this.selected.clear();
+    this.schedule();
+  }
+
+  private openTaskForm(): void {
+    new NewTaskModal(
+      this.controller.app,
+      categoryValue(this.filter.value),
+      () => this.controller.destinations(),
+      async draft => this.onTaskCreated(await this.controller.create(draft)),
+    ).open();
+  }
+
+  private onTaskCreated(created: CreatedTask): void {
+    if (this.closed) {
+      new Notice("Task created.");
+      return;
+    }
+
+    this.recentTasks.add(stateKey(created.path, created.blockId));
+    if (this.recentTasks.size > PAGE_SIZE) {
+      const oldest = this.recentTasks.values().next();
+      if (!oldest.done) this.recentTasks.delete(oldest.value);
+    }
+
+    const category = created.category ?? "";
+    if (this.filter.value === "all" || this.filter.value === category) {
+      this.activate("todo");
+      this.schedule();
+      return;
+    }
+
+    const message = this.containerEl.ownerDocument.createDocumentFragment();
+    message.append("Task created. ");
+    const view = message.createEl("button", { text: "View task", attr: { type: "button" } });
+    const notice = new Notice(message, 8000);
+    view.addEventListener("click", () => {
+      notice.hide();
+      if (this.closed) return;
+      this.filter.value = category;
+      this.onFilterChange();
+      this.activate("todo");
+      this.columns.get("todo")?.element.scrollIntoView({ block: "nearest" });
+    });
+  }
+
   private render(): void {
     if (this.root.getClientRects().length === 0) return;
     const { tasks, loading, failedReads } = this.controller.snapshot();
@@ -207,12 +262,20 @@ export class Board extends MarkdownRenderChild {
     const filter = this.filter.value;
     const groups: Record<Status, Task[]> = { todo: [], progress: [], done: [] };
     const validSelection = new Set<string>();
+    const recent = new Map<string, Task>();
     for (const task of tasks) {
       const state = this.controller.state(task);
       const status = taskStatus(task, state);
       if (filter !== "all" && (state?.category ?? "") !== filter) continue;
-      groups[status].push(task);
+      const createdKey = status === "todo" && this.recentTasks.size && task.blockId
+        ? stateKey(task.path, task.blockId) : undefined;
+      if (createdKey && this.recentTasks.has(createdKey)) recent.set(createdKey, task);
+      else groups[status].push(task);
       if (status === "todo" && this.selected.get(task.key) === task) validSelection.add(task.key);
+    }
+    for (const key of this.recentTasks) {
+      const task = recent.get(key);
+      if (task) groups.todo.unshift(task);
     }
     for (const key of this.selected.keys()) {
       if (!validSelection.has(key)) this.selected.delete(key);
