@@ -34,6 +34,108 @@
   margin-inline-start: auto;
 }
 
+.pc-project-filter,
+.pc-task-project {
+  max-width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+.pc-project-panels {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.pc-project-panel {
+  min-width: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  background: var(--background-primary);
+}
+
+.pc-project-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 10px;
+  padding: 8px 10px;
+}
+
+.pc-board .pc-project-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  padding: 4px 6px;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+}
+
+.pc-board .pc-project-toggle:disabled {
+  color: var(--text-normal);
+  opacity: 1;
+  cursor: default;
+}
+
+.pc-project-toggle:not(:disabled)::before {
+  color: var(--text-muted);
+  content: "▸";
+}
+
+.pc-project-toggle[aria-expanded="true"]:not(:disabled)::before {
+  content: "▾";
+}
+
+.pc-project-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-muted);
+}
+
+.pc-project-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.pc-project-title {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.pc-project-count {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+}
+
+.pc-project-body {
+  padding: 0 8px 8px;
+}
+
+.pc-card-project {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pc-board .pc-task-project {
+  height: auto;
+  padding-block: 2px;
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
 .pc-new-task-error,
 .pc-form-error {
   color: var(--text-error);

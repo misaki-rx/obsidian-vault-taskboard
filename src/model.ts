@@ -12,20 +12,20 @@ export const statusLabels: Record<Status, string> = {
 export const builtInCategories = ["Read", "Implementation", "Write"] as const;
 export type Category = string;
 
-function categoryKey(name: string): string {
+export function labelKey(name: string): string {
   return name.trim().normalize("NFC").toLowerCase();
 }
 
 export function findCategory(names: readonly Category[], name: string): Category | undefined {
-  const key = categoryKey(name);
-  return names.find(category => categoryKey(category) === key);
+  const key = labelKey(name);
+  return names.find(category => labelKey(category) === key);
 }
 
 export function categoryName(input: string): Category {
   const name = input.trim().normalize("NFC");
   if (!name) throw new Error("Enter a category name.");
   if (/[\u0000-\u001f\u007f]/.test(name)) throw new Error("Use a single line for the category name.");
-  if (["uncategorized", "+ category", "all categories"].includes(categoryKey(name))) {
+  if (["uncategorized", "+ category", "all categories"].includes(labelKey(name))) {
     throw new Error("That label is reserved by the category menu.");
   }
   return name;
@@ -34,6 +34,24 @@ export function categoryName(input: string): Category {
 export interface TaskState {
   progress?: true;
   category?: Category;
+  projectId?: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+}
+
+export type ProjectChoice = string | { name: string } | null;
+
+export function projectName(input: string): string {
+  const name = input.trim().normalize("NFC");
+  if (!name) throw new Error("Enter a project name.");
+  if (/[\u0000-\u001f\u007f]/.test(name)) throw new Error("Use a single line for the project name.");
+  if (["no project", "+ project", "all projects"].includes(labelKey(name))) {
+    throw new Error("That label is reserved by the project menu.");
+  }
+  return name;
 }
 
 export interface Task {

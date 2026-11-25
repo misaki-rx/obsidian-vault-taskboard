@@ -19,21 +19,24 @@ export function fillCategories(
   else select.selectedIndex = 0;
 }
 
-export class CategoryModal extends Modal {
+export class NameModal extends Modal {
   constructor(
     app: App,
-    private readonly categories: () => readonly Category[],
-    private readonly submitName: (category: Category, isNew: boolean) => Promise<void> | void,
+    private readonly kind: "category" | "project",
+    private readonly names: () => readonly string[],
+    private readonly validate: (name: string) => string,
+    private readonly submitName: (name: string, isNew: boolean) => Promise<void> | void,
   ) {
     super(app);
   }
 
   onOpen(): void {
-    this.setTitle("New category");
+    this.setTitle(`New ${this.kind}`);
     const form = this.contentEl.createEl("form");
-    const row = new Setting(form).setName("Category name");
+    const field = `${this.kind === "category" ? "Category" : "Project"} name`;
+    const row = new Setting(form).setName(field);
     const name = row.controlEl.createEl("input", {
-      attr: { type: "text", "aria-label": "Category name", required: "required" },
+      attr: { type: "text", "aria-label": field, required: "required" },
     });
     const feedback = form.createDiv({ cls: "pc-category-feedback", attr: { role: "status" } });
     const error = form.createDiv({ cls: "pc-form-error", attr: { role: "alert" } });
@@ -42,14 +45,14 @@ export class CategoryModal extends Modal {
     cancel.addEventListener("click", () => this.close());
     const submit = actions.controlEl.createEl("button", {
       cls: "mod-cta",
-      text: "Create category",
+      text: `Create ${this.kind}`,
       attr: { type: "submit" },
     });
 
     name.addEventListener("input", () => {
-      const existing = findCategory(this.categories(), name.value);
+      const existing = findCategory(this.names(), name.value);
       feedback.textContent = existing ? `“${existing}” already exists.` : "";
-      submit.textContent = existing ? `Use ${existing}` : "Create category";
+      submit.textContent = existing ? `Use ${existing}` : `Create ${this.kind}`;
       error.textContent = "";
     });
     form.addEventListener("submit", async event => {
@@ -57,13 +60,13 @@ export class CategoryModal extends Modal {
       if (submit.disabled) return;
       error.textContent = "";
       try {
-        const proposed = categoryName(name.value);
-        const existing = findCategory(this.categories(), proposed);
+        const proposed = this.validate(name.value);
+        const existing = findCategory(this.names(), proposed);
         name.disabled = cancel.disabled = submit.disabled = true;
         await this.submitName(existing ?? proposed, !existing);
         this.close();
       } catch (failure) {
-        error.textContent = failure instanceof Error ? failure.message : "Could not save the category.";
+        error.textContent = failure instanceof Error ? failure.message : `Could not save the ${this.kind}.`;
       } finally {
         name.disabled = cancel.disabled = submit.disabled = false;
       }
@@ -73,5 +76,15 @@ export class CategoryModal extends Modal {
 
   onClose(): void {
     this.contentEl.empty();
+  }
+}
+
+export class CategoryModal extends NameModal {
+  constructor(
+    app: App,
+    categories: () => readonly Category[],
+    submit: (category: Category, isNew: boolean) => Promise<void> | void,
+  ) {
+    super(app, "category", categories, categoryName, submit);
   }
 }

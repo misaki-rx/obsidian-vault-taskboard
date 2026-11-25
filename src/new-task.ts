@@ -1,5 +1,5 @@
 import type { TFile } from "obsidian";
-import type { Category } from "./model";
+import type { Category, ProjectChoice } from "./model";
 
 export const DEFAULT_INBOX = "Progress Inbox.md";
 
@@ -7,6 +7,7 @@ export interface TaskDraft {
   title: string;
   category: Category | null;
   createCategory?: boolean;
+  project: ProjectChoice;
   destination: TFile | null;
 }
 
@@ -14,6 +15,7 @@ export interface CreatedTask {
   path: string;
   blockId: string;
   category: Category | null;
+  projectId?: string;
 }
 
 export function taskTitle(input: string): string {

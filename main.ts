@@ -3,8 +3,9 @@ import type { TAbstractFile } from "obsidian";
 import { Board } from "./src/board";
 import { appendTask, DEFAULT_INBOX, taskTitle, type CreatedTask, type TaskDraft } from "./src/new-task";
 import {
-  builtInCategories, categoryName, editTaskLines, findCategory, hasBoardBlock, stateKey, taskStatus,
-  type Category, type LineEdit, type Status, type Task, type TaskState,
+  builtInCategories, categoryName, editTaskLines, findCategory, hasBoardBlock, labelKey,
+  projectName, stateKey, taskStatus,
+  type Category, type LineEdit, type Project, type ProjectChoice, type Status, type Task, type TaskState,
 } from "./src/model";
 import { TaskIndex } from "./src/task-index";
 
@@ -15,10 +16,11 @@ interface BoardData {
   boardPath: string;
   boardWidth?: number;
   customCategories: Category[];
+  projects: Project[];
   tasks: Record<string, TaskState>;
 }
 
-type Change = { status: Status } | { category: Category | null };
+type Change = { status: Status } | { category: Category | null } | { projectId: string | null };
 
 function restoreData(raw: unknown): BoardData {
   const data = raw as Partial<BoardData> | null;
@@ -36,6 +38,25 @@ function restoreData(raw: unknown): BoardData {
     }
   }
   const available = [...builtInCategories, ...customCategories];
+  const projects: Project[] = [];
+  const projectIds = new Set<string>();
+  const projectNames = new Set<string>();
+  if (Array.isArray(data?.projects)) {
+    for (const project of data.projects) {
+      if (typeof project?.id !== "string" || !/^project-[a-f0-9]{16}$/.test(project.id) ||
+        typeof project.name !== "string" || projectIds.has(project.id)) continue;
+      try {
+        const name = projectName(project.name);
+        const key = labelKey(name);
+        if (projectNames.has(key)) continue;
+        projectIds.add(project.id);
+        projectNames.add(key);
+        projects.push({ id: project.id, name });
+      } catch {
+        // Ignore malformed project names from stored data.
+      }
+    }
+  }
   const tasks: Record<string, TaskState> = {};
   for (const [key, value] of Object.entries(data?.tasks ?? {})) {
     let pair: unknown;
@@ -51,15 +72,16 @@ function restoreData(raw: unknown): BoardData {
     const state: TaskState = {};
     if (value?.progress === true) state.progress = true;
     if (typeof value?.category === "string") state.category = findCategory(available, value.category);
-    if (state.progress || state.category) tasks[stateKey(pair[0], pair[1])] = state;
+    if (typeof value?.projectId === "string" && projectIds.has(value.projectId)) state.projectId = value.projectId;
+    if (state.progress || state.category || state.projectId) tasks[stateKey(pair[0], pair[1])] = state;
   }
   const boardWidth = typeof data?.boardWidth === "number" &&
     Number.isFinite(data.boardWidth) && data.boardWidth > 0 ? data.boardWidth : undefined;
-  return { boardPath: data?.boardPath || DEFAULT_BOARD, boardWidth, customCategories, tasks };
+  return { boardPath: data?.boardPath || DEFAULT_BOARD, boardWidth, customCategories, projects, tasks };
 }
 
 export default class ProgressChecker extends Plugin {
-  private data: BoardData = { boardPath: DEFAULT_BOARD, customCategories: [], tasks: {} };
+  private data: BoardData = { boardPath: DEFAULT_BOARD, customCategories: [], projects: [], tasks: {} };
   private index!: TaskIndex;
   private readonly listeners = new Set<() => void>();
   private queue: Promise<unknown> = Promise.resolve();
@@ -79,12 +101,14 @@ export default class ProgressChecker extends Plugin {
         }),
         state: task => this.stateFor(task),
         categories: () => this.categoryNames(),
+        projects: () => this.data.projects,
         subscribe: listener => {
           this.listeners.add(listener);
           return () => this.listeners.delete(listener);
         },
         move: (tasks, status) => this.change(tasks, { status }),
         categorize: (task, category, create) => this.setTaskCategory(task, category, create),
+        setProject: (task, choice) => this.setTaskProject(task, choice),
         refresh: () => this.index.refresh(),
         open: task => this.openTask(task),
         destinations: () => this.app.vault.getMarkdownFiles()
@@ -208,15 +232,47 @@ export default class ProgressChecker extends Plugin {
   private setTaskCategory(task: Task, requested: Category | null, create: boolean): Promise<Category | null> {
     return this.enqueue(async () => {
       const { category, customCategories } = this.resolveCategory(requested, create);
-      try {
-        await this.changeNote(task.path, [task], { category }, customCategories);
-      } catch (error) {
-        const file = this.app.vault.getFileByPath(task.path);
-        if (file) void this.index.read(file);
-        throw error;
-      }
+      await this.updateTaskMetadata(task, { category }, { customCategories });
       return category;
     });
+  }
+
+  private resolveProject(choice: ProjectChoice): { projectId: string | null; projects?: Project[] } {
+    if (choice === null) return { projectId: null };
+    if (typeof choice === "string") {
+      if (!this.data.projects.some(project => project.id === choice)) {
+        throw new Error("This project is no longer available.");
+      }
+      return { projectId: choice };
+    }
+    const name = projectName(choice.name);
+    const existing = this.data.projects.find(project => labelKey(project.name) === labelKey(name));
+    if (existing) return { projectId: existing.id };
+    let id: string;
+    do { id = this.randomId("project"); } while (this.data.projects.some(project => project.id === id));
+    return { projectId: id, projects: [...this.data.projects, { id, name }] };
+  }
+
+  private setTaskProject(task: Task, choice: ProjectChoice): Promise<string | null> {
+    return this.enqueue(async () => {
+      const { projectId, projects } = this.resolveProject(choice);
+      await this.updateTaskMetadata(task, { projectId }, { projects });
+      return projectId;
+    });
+  }
+
+  private async updateTaskMetadata(
+    task: Task,
+    change: Change,
+    registries: Partial<Pick<BoardData, "customCategories" | "projects">>,
+  ): Promise<void> {
+    try {
+      await this.changeNote(task.path, [task], change, registries);
+    } catch (error) {
+      const file = this.app.vault.getFileByPath(task.path);
+      if (file) void this.index.read(file);
+      throw error;
+    }
   }
 
   private isTaskDestination(path: string, boardPath: string): boolean {
@@ -226,6 +282,7 @@ export default class ProgressChecker extends Plugin {
   private async createTask(draft: TaskDraft, boardPath: string): Promise<CreatedTask> {
     const title = taskTitle(draft.title);
     const { category, customCategories } = this.resolveCategory(draft.category, draft.createCategory);
+    const { projectId, projects } = this.resolveProject(draft.project);
     const path = draft.destination?.path ?? DEFAULT_INBOX;
     if (!this.isTaskDestination(path, boardPath)) {
       throw new Error("Choose a note other than the board.");
@@ -244,10 +301,14 @@ export default class ProgressChecker extends Plugin {
     if (file) this.validateSource(file, path, current, current);
     const blockId = this.makeBlockId(current);
     const content = appendTask(current, title, blockId);
-    const next = category ? {
+    const next = category || projectId ? {
       ...this.data,
       customCategories: customCategories ?? this.data.customCategories,
-      tasks: { ...this.data.tasks, [stateKey(path, blockId)]: { category } },
+      projects: projects ?? this.data.projects,
+      tasks: {
+        ...this.data.tasks,
+        [stateKey(path, blockId)]: { category: category ?? undefined, projectId: projectId ?? undefined },
+      },
     } : undefined;
 
     await this.persistTaskChange(next, async () => {
@@ -260,7 +321,7 @@ export default class ProgressChecker extends Plugin {
         await this.app.vault.create(path, content);
       }
     });
-    return { path, blockId, category };
+    return { path, blockId, category, projectId: projectId ?? undefined };
   }
 
   private change(tasks: Task[], change: Change): Promise<Task[]> {
@@ -298,7 +359,7 @@ export default class ProgressChecker extends Plugin {
     path: string,
     tasks: Task[],
     change: Change,
-    customCategories?: Category[],
+    registries: Partial<Pick<BoardData, "customCategories" | "projects">> = {},
   ): Promise<void> {
     const file = this.app.vault.getFileByPath(path);
     const note = this.index.notes.get(path);
@@ -314,11 +375,12 @@ export default class ProgressChecker extends Plugin {
     const previous = this.data;
     const next: BoardData = {
       ...previous,
-      customCategories: customCategories ?? previous.customCategories,
+      customCategories: registries.customCategories ?? previous.customCategories,
+      projects: registries.projects ?? previous.projects,
       tasks: { ...previous.tasks },
     };
     const edits: LineEdit[] = [];
-    let stateChanged = customCategories !== undefined;
+    let stateChanged = Boolean(registries.customCategories || registries.projects);
     for (const task of tasks) {
       const old = this.stateFor(task);
       const state = { ...old };
@@ -330,21 +392,26 @@ export default class ProgressChecker extends Plugin {
         marker = target === "done" ? "x" : " ";
         if (target === "progress") state.progress = true;
         else delete state.progress;
-      } else {
+      } else if ("category" in change) {
         if (old?.category === (change.category ?? undefined)) continue;
         if (change.category) state.category = change.category;
         else delete state.category;
+      } else {
+        if (old?.projectId === (change.projectId ?? undefined)) continue;
+        if (change.projectId) state.projectId = change.projectId;
+        else delete state.projectId;
       }
 
       if (task.blockId && (counts.get(task.blockId) ?? 0) > 1) {
         throw new Error("Multiple source tasks have the same block ID.");
       }
-      const needsId = !task.blockId && (state.progress || state.category);
+      const needsId = !task.blockId && (state.progress || state.category || state.projectId);
       const newBlockId = needsId ? this.makeBlockId(note.source) : undefined;
       const blockId = task.blockId ?? newBlockId;
-      if (blockId && (state.progress !== old?.progress || state.category !== old?.category)) {
+      if (blockId && (state.progress !== old?.progress || state.category !== old?.category ||
+        state.projectId !== old?.projectId)) {
         const key = stateKey(path, blockId);
-        if (state.progress || state.category) next.tasks[key] = state;
+        if (state.progress || state.category || state.projectId) next.tasks[key] = state;
         else delete next.tasks[key];
         stateChanged = true;
       }
@@ -403,11 +470,13 @@ export default class ProgressChecker extends Plugin {
 
   private makeBlockId(source: string): string {
     let id: string;
-    do {
-      const bytes = crypto.getRandomValues(new Uint8Array(8));
-      id = "pc-" + Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
-    } while (source.includes(`^${id}`));
+    do { id = this.randomId("pc"); } while (source.includes(`^${id}`));
     return id;
+  }
+
+  private randomId(prefix: string): string {
+    const bytes = crypto.getRandomValues(new Uint8Array(8));
+    return prefix + "-" + Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
   }
 
   private onRename(file: TAbstractFile, oldPath: string): void {

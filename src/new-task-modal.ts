@@ -1,7 +1,8 @@
 import { FuzzySuggestModal, Modal, Setting, type App, type TFile } from "obsidian";
 import { CategoryModal, CREATE_CATEGORY, fillCategories } from "./category-ui";
-import { findCategory, type Category } from "./model";
+import { findCategory, type Category, type Project, type ProjectChoice } from "./model";
 import { DEFAULT_INBOX, type TaskDraft } from "./new-task";
+import { CREATE_PROJECT, DRAFT_PROJECT, fillProjects, openProjectModal } from "./project-ui";
 
 class DestinationPicker extends FuzzySuggestModal<TFile> {
   constructor(
@@ -31,6 +32,8 @@ export class NewTaskModal extends Modal {
     app: App,
     private readonly initialCategory: Category | null,
     private readonly categories: () => readonly Category[],
+    private readonly initialProject: string | null,
+    private readonly projects: () => readonly Project[],
     private readonly destinations: () => TFile[],
     private readonly submitTask: (draft: TaskDraft) => Promise<void>,
   ) {
@@ -72,6 +75,33 @@ export class NewTaskModal extends Modal {
         category = name;
         showCategories();
       }).open();
+    });
+
+    let project: ProjectChoice = this.initialProject;
+    let draftProject: { name: string } | undefined;
+    const projectSelect = new Setting(form).setName("Project").controlEl.createEl("select", {
+      attr: { "aria-label": "Project" },
+    });
+    const availableProjects = () => draftProject
+      ? [...this.projects(), { id: DRAFT_PROJECT, name: draftProject.name }]
+      : this.projects();
+    const showProjects = () => {
+      fillProjects(projectSelect, availableProjects(), "assign");
+      projectSelect.value = typeof project === "string" ? project : project ? DRAFT_PROJECT : "";
+    };
+    showProjects();
+    projectSelect.addEventListener("change", () => {
+      const choice = projectSelect.value;
+      if (choice !== CREATE_PROJECT) {
+        project = choice === DRAFT_PROJECT ? draftProject ?? null : choice || null;
+        return;
+      }
+      showProjects();
+      openProjectModal(this.app, availableProjects, selected => {
+        if (selected && typeof selected === "object") draftProject = selected;
+        project = selected === DRAFT_PROJECT ? draftProject ?? null : selected;
+        showProjects();
+      });
     });
 
     let destination: TFile | null = null;
@@ -121,6 +151,7 @@ export class NewTaskModal extends Modal {
           category,
           destination,
           createCategory: category === draftCategory,
+          project,
         };
         for (const control of controls) control.disabled = true;
         await this.submitTask(draft);
