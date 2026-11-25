@@ -112,6 +112,11 @@ export class BoardWidth extends Component {
     const center = left + available / 2;
     this.maximum = Math.max(0, available - gutter * 2);
     if (!this.maximum) return;
+    if (pane !== this.frame && pane.clientHeight > 0) {
+      this.board.style.setProperty("--pc-project-max-height", `${Math.floor(pane.clientHeight * 2 / 3)}px`);
+    } else {
+      this.board.style.removeProperty("--pc-project-max-height");
+    }
     this.layoutEditorWidget(left, available);
     const preferred = this.draft === undefined ? this.preferred : this.draft;
     this.actual = this.clamp(preferred ?? this.maximum);

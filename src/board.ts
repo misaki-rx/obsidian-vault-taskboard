@@ -163,7 +163,20 @@ export class Board extends MarkdownRenderChild {
 
     this.addChild(new BoardWidth(this.widthFrame, this.root, toolbar, this.controller));
     this.register(this.controller.subscribe(() => this.schedule()));
-    this.resize = new ResizeObserver(() => this.schedule());
+    this.resize = new ResizeObserver(entries => {
+      const changedPanels = new Set<HTMLElement>();
+      for (const { target } of entries) {
+        if (target === this.root) this.schedule();
+        const scrollArea = target.closest<HTMLElement>(".pc-project-body");
+        if (scrollArea && this.panelList.contains(scrollArea)) changedPanels.add(scrollArea);
+      }
+      for (const area of changedPanels) {
+        const overflowing = !area.hidden && area.scrollHeight > area.clientHeight;
+        area.classList.toggle("pc-project-overflow", overflowing);
+        if (overflowing) area.tabIndex = 0;
+        else area.removeAttribute("tabindex");
+      }
+    });
     this.resize.observe(this.root);
     this.render();
   }
@@ -179,7 +192,7 @@ export class Board extends MarkdownRenderChild {
     const add = header.createEl("button", {
       cls: "pc-project-add", text: "+ New task", attr: { type: "button" },
     });
-    const body = element.createDiv({ cls: "pc-project-body" });
+    const body = element.createDiv({ cls: "pc-project-body", attr: { role: "region" } });
     const panel: Panel = {
       id, element, toggle, title, count, body,
       columns: new Map(), tabs: new Map(), limits: new Map(), active: "todo",
@@ -197,8 +210,11 @@ export class Board extends MarkdownRenderChild {
 
   private mountColumns(panel: Panel): void {
     if (panel.columns.size) return;
-    const tabs = panel.body.createDiv({ cls: "pc-tabs", attr: { "aria-label": "Task columns" } });
-    const columns = panel.body.createDiv({ cls: "pc-columns" });
+    const content = panel.body.createDiv({ cls: "pc-project-content" });
+    const tabs = content.createDiv({ cls: "pc-tabs", attr: { "aria-label": "Task columns" } });
+    const columns = content.createDiv({ cls: "pc-columns" });
+    this.resize?.observe(panel.body);
+    this.resize?.observe(content);
     for (const status of statuses) {
       const tab = tabs.createEl("button", {
         attr: { type: "button", "data-pc-drop": status },
@@ -407,6 +423,7 @@ export class Board extends MarkdownRenderChild {
       const open = shown && (single || this.expanded.has(id));
       panel.element.hidden = !shown;
       panel.body.hidden = !open;
+      panel.body.setAttribute("aria-label", `${name} tasks`);
       panel.toggle.disabled = single;
       panel.toggle.setAttribute("aria-expanded", String(open));
       panel.title.textContent = name;
@@ -420,8 +437,13 @@ export class Board extends MarkdownRenderChild {
     }
     if (this.scrollTarget !== undefined) {
       const target = this.revealKey && this.cards.get(this.revealKey)?.element;
-      const element = target || this.panels.get(this.scrollTarget)?.element;
-      element?.scrollIntoView({ block: "nearest" });
+      const panel = this.panels.get(this.scrollTarget);
+      if (target) {
+        target.scrollIntoView({ block: "nearest" });
+      } else if (panel) {
+        panel.body.scrollTop = 0;
+        panel.toggle.scrollIntoView({ block: "nearest" });
+      }
       this.scrollTarget = undefined;
     }
 

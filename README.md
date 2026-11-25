@@ -13,6 +13,7 @@ Run **Progress Checker: Open board** from the command palette. The plugin opens 
 - Drag a card by its handle or click the handle to choose a column. To start several tasks at once, select them in **To Do** and click **Move … to In Progress**.
 - Assign or create categories from a card, then filter the board by category. Click the note name on a card to jump to the source task.
 - Use a card's folder menu to assign or create a project. **All projects** groups tasks into collapsible panels. Select a project to focus on it, and use the category filter to narrow the results.
+- Long project panels scroll independently. Scroll over the panel header or between panels to move through the note.
 - Use **+ New task** to add a Markdown task to an existing note or to `Progress Inbox.md` by default.
 
 To embed the board in another note, add this block and open the note in Reading view.

@@ -48,6 +48,10 @@
 }
 
 .pc-project-panel {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  max-height: var(--pc-project-max-height, 66vh);
   min-width: 0;
   border: 1px solid var(--background-modifier-border);
   border-radius: 12px;
@@ -56,6 +60,7 @@
 
 .pc-project-header {
   display: flex;
+  flex: none;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
@@ -116,6 +121,17 @@
 }
 
 .pc-project-body {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scroll-padding-block-start: 44px;
+}
+
+.pc-project-body.pc-project-overflow {
+  overscroll-behavior-y: contain;
+}
+
+.pc-project-content {
   padding: 0 8px 8px;
 }
 
@@ -224,6 +240,13 @@
   gap: 8px;
   min-height: 25px;
   margin-bottom: 9px;
+}
+
+.pc-project-overflow .pc-column-header {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: color-mix(in srgb, var(--pc-accent) 6%, var(--background-primary));
 }
 
 .pc-board .pc-column-label {
